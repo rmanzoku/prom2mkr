@@ -15,6 +15,13 @@ import (
 	"github.com/prometheus/prom2json"
 )
 
+var ignoreNames = map[string]bool{
+	"go_info": true,
+}
+var ignoreLabels = map[string]bool{
+	"error": true,
+}
+
 // Prom2mkrPlugin mackerel plugin for Prometheus metrics
 type Prom2mkrPlugin struct {
 	Prefix string
@@ -27,6 +34,12 @@ func (p Prom2mkrPlugin) traverseMap(families []*prom2json.Family, prefix string)
 	var name string
 
 	for _, f := range families {
+
+		_, ok := ignoreNames[f.Name]
+		if ok {
+			continue
+		}
+
 		if prefix != "" {
 			name = prefix + "." + strings.Replace(f.Name, "_", ".", -1)
 		} else {
@@ -37,45 +50,80 @@ func (p Prom2mkrPlugin) traverseMap(families []*prom2json.Family, prefix string)
 		case "COUNTER":
 			for _, m := range f.Metrics {
 				mm := m.(prom2json.Metric)
+				n := name
 
 				if len(mm.Labels) == 0 {
-					stat[name], err = strconv.ParseFloat(mm.Value, 64)
+					stat[n], err = strconv.ParseFloat(mm.Value, 64)
 					continue
 				}
 
 				for k, l := range mm.Labels {
-					n := name + "." + k + "_" + l
-					stat[n], err = strconv.ParseFloat(mm.Value, 64)
-
-					if err != nil {
-						return nil, err
+					_, ok := ignoreLabels[k]
+					if ok {
+						continue
 					}
+
+					n = n + "." + k + "_" + l
+				}
+
+				stat[n], err = strconv.ParseFloat(mm.Value, 64)
+				if err != nil {
+					return nil, err
 				}
 			}
 
 		case "GAUGE":
 			for _, m := range f.Metrics {
 				mm := m.(prom2json.Metric)
-				if len(mm.Labels) == 0 {
-					stat[name], err = strconv.ParseFloat(mm.Value, 64)
-					continue
-				}
+				n := name
 
 				for k, l := range mm.Labels {
-					n := name + "." + k + "_" + l
-					stat[n], err = strconv.ParseFloat(mm.Value, 64)
+					_, ok := ignoreLabels[k]
+					if ok {
+						continue
+					}
 
+					n = n + "." + k + "_" + l
+				}
+
+				stat[n], err = strconv.ParseFloat(mm.Value, 64)
+				if err != nil {
+					return nil, err
+				}
+			}
+
+		case "SUMMARY":
+			for _, m := range f.Metrics {
+				ss := m.(prom2json.Summary)
+				n := name
+
+				for k, l := range ss.Labels {
+					_, ok := ignoreLabels[k]
+					if ok {
+						continue
+					}
+
+					n = n + "." + k + "_" + l
+				}
+
+				for k, q := range ss.Quantiles {
+					quantile := strings.Replace(k, ".", "_", -1)
+					stat[n+"."+quantile], err = strconv.ParseFloat(q, 64)
 					if err != nil {
 						return nil, err
 					}
 				}
-			}
 
-		// case "SUMMERY":
-		// 	f.Metrics[0].(prom2json.Summary)
-		// 	if err != nil {
-		// 		return nil, err
-		// 	}
+				stat[n+".count"], err = strconv.ParseFloat(ss.Count, 64)
+				if err != nil {
+					return nil, err
+				}
+
+				stat[n+".sum"], err = strconv.ParseFloat(ss.Sum, 64)
+				if err != nil {
+					return nil, err
+				}
+			}
 
 		default:
 			fmt.Println(f.Type)
