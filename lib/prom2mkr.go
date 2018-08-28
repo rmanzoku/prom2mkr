@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -22,33 +21,22 @@ type Prom2mkrPlugin struct {
 	URL    string
 }
 
-func (p Prom2mkrPlugin) traverseMap(content []*prom2json.Family, path []string) (map[string]float64, error) {
+func (p Prom2mkrPlugin) traverseMap(families []*prom2json.Family, prefix string) (map[string]float64, error) {
 	stat := make(map[string]float64)
 	var err error
 	var name string
 
-	for _, c := range content {
-		name = strings.Replace(c.Name, "_", ".", -1)
+	for _, f := range families {
+		name = prefix + "." + strings.Replace(f.Name, "_", ".", -1)
 
-		for _, m := range c.Metrics {
-
-			switch reflect.TypeOf(m) {
-			case reflect.TypeOf(prom2json.Metric{}):
-
-				metric := m.(prom2json.Metric)
-				for _, l := range metric.Labels {
-					name = name + "." + l
-				}
-
-				stat[name], err = strconv.ParseFloat(metric.Value, 64)
-				if err != nil {
-					fmt.Println("err")
-				}
-
-			default:
-				continue
+		switch f.Type {
+		case "GAUGE":
+			stat[name], err = strconv.ParseFloat(f.Metrics[0].(prom2json.Metric).Value, 64)
+			if err != nil {
+				return nil, err
 			}
-
+		default:
+			fmt.Println(f.Type)
 		}
 
 	}
@@ -74,7 +62,7 @@ func (p Prom2mkrPlugin) FetchMetrics() (map[string]float64, error) {
 		result = append(result, prom2json.NewFamily(mf))
 	}
 
-	ret, err := p.traverseMap(result, []string{p.Prefix})
+	ret, err := p.traverseMap(result, p.Prefix)
 	if err != nil {
 		return nil, err
 	}
