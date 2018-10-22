@@ -1,17 +1,17 @@
 package mpp2m
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
+	"os"
 	"strconv"
 	"strings"
-	"time"
 
-	// mp "github.com/mackerelio/go-mackerel-plugin"
-
+	mp "github.com/mackerelio/go-mackerel-plugin"
 	dto "github.com/prometheus/client_model/go"
-
 	"github.com/prometheus/prom2json"
 )
 
@@ -24,11 +24,13 @@ var ignoreLabels = map[string]bool{
 
 // Prom2mkrPlugin mackerel plugin for Prometheus metrics
 type Prom2mkrPlugin struct {
-	Prefix string
-	URL    string
+	Prefix       string
+	URL          string
+	Keys         []string
+	GraphDefFile string
 }
 
-func (p Prom2mkrPlugin) traverseMap(families []*prom2json.Family, prefix string) (map[string]float64, error) {
+func (p Prom2mkrPlugin) traverseMap(families []*prom2json.Family) (map[string]float64, error) {
 	stat := make(map[string]float64)
 	var err error
 	var name string
@@ -40,11 +42,7 @@ func (p Prom2mkrPlugin) traverseMap(families []*prom2json.Family, prefix string)
 			continue
 		}
 
-		if prefix != "" {
-			name = prefix + "." + strings.Replace(f.Name, "_", ".", -1)
-		} else {
-			name = strings.Replace(f.Name, "_", ".", -1)
-		}
+		name = strings.Replace(f.Name, "_", ".", -1)
 
 		switch f.Type {
 		case "COUNTER":
@@ -131,13 +129,11 @@ func (p Prom2mkrPlugin) traverseMap(families []*prom2json.Family, prefix string)
 
 	}
 
-	return stat, err
+	return stat, nil
 }
 
 // FetchMetrics interface for mackerelplugin
 func (p Prom2mkrPlugin) FetchMetrics() (map[string]float64, error) {
-	ret := make(map[string]float64)
-
 	mfChan := make(chan *dto.MetricFamily, 1024)
 
 	go func() {
@@ -152,7 +148,7 @@ func (p Prom2mkrPlugin) FetchMetrics() (map[string]float64, error) {
 		result = append(result, prom2json.NewFamily(mf))
 	}
 
-	ret, err := p.traverseMap(result, p.Prefix)
+	ret, err := p.traverseMap(result)
 	if err != nil {
 		return nil, err
 	}
@@ -160,34 +156,76 @@ func (p Prom2mkrPlugin) FetchMetrics() (map[string]float64, error) {
 	return ret, nil
 }
 
-// MetricKeyPrefix interface for PluginWithPrefix
-func (p Prom2mkrPlugin) MetricKeyPrefix() string {
-	return p.Prefix
+func (p Prom2mkrPlugin) createGraphDef() mp.GraphDef {
+
+	return mp.GraphDef{}
+}
+
+// GraphDefinition aa
+func (p Prom2mkrPlugin) GraphDefinition() map[string]mp.Graphs {
+	ret := mp.GraphDef{}
+
+	_, err := os.Stat(p.GraphDefFile)
+	if !os.IsNotExist(err) {
+		file, err := ioutil.ReadFile(p.GraphDefFile)
+		if err != nil {
+			panic(err)
+		}
+		err = json.Unmarshal(file, &ret)
+		if err != nil {
+			panic(err)
+		}
+
+		return ret.Graphs
+	}
+
+	ret = p.createGraphDef()
+	file, err := os.Create(p.GraphDefFile)
+	if err != nil {
+		panic(err)
+	}
+
+	jsonByte, err := json.Marshal(ret)
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = file.Write(jsonByte)
+	if err != nil {
+		panic(err)
+	}
+
+	return ret.Graphs
 }
 
 // Do the plugin
 func Do() {
 	var (
-		optPrefix = flag.String("metric-key-prefix", "", "Metric key prefix")
-		optURL    = flag.String("url", "", "The bind url to use for the control server")
-		// optTempfile = flag.String("tempfile", "", "Temp file name")
+		optPrefix       = flag.String("metric-key-prefix", "", "Metric key prefix")
+		optURL          = flag.String("url", "", "The bind url to use for the control server")
+		optTempfile     = flag.String("tempfile", "", "Temp file name")
+		optTempGraphDef = flag.String("tempGraphDef", "/tmp/prom2mkr.json", "Temp file for GraphDefinition")
 	)
 	flag.Parse()
 
 	var p2m Prom2mkrPlugin
 	p2m.Prefix = *optPrefix
 	p2m.URL = *optURL
+	p2m.GraphDefFile = *optTempGraphDef
 
 	metrics, err := p2m.FetchMetrics()
 	if err != nil {
 		log.Fatal(err)
 	}
-	now := time.Now().Unix()
-	for k, v := range metrics {
-		fmt.Printf("%s\t%f\t%d\n", k, v, now)
+
+	p2m.Keys = make([]string, len(metrics))
+	i := 0
+	for k := range metrics {
+		p2m.Keys[i] = k
+		i++
 	}
 
-	// helper := mp.NewMackerelPlugin(p2m)
-	// helper.Tempfile = *optTempfile
-	// helper.Run()
+	helper := mp.NewMackerelPlugin(p2m)
+	helper.Tempfile = *optTempfile
+	helper.Run()
 }
