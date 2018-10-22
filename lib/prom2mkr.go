@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -132,20 +131,31 @@ func (p Prom2mkrPlugin) traverseMap(families []*prom2json.Family) (map[string]fl
 	return stat, nil
 }
 
-// FetchMetrics interface for mackerelplugin
-func (p Prom2mkrPlugin) FetchMetrics() (map[string]float64, error) {
+func (p Prom2mkrPlugin) fetchFamilies() ([]*prom2json.Family, error) {
+
 	mfChan := make(chan *dto.MetricFamily, 1024)
 
 	go func() {
 		err := prom2json.FetchMetricFamilies(p.URL, mfChan, "", "", true)
 		if err != nil {
-			log.Fatal(err)
+			panic(err)
 		}
 	}()
 
 	result := []*prom2json.Family{}
 	for mf := range mfChan {
 		result = append(result, prom2json.NewFamily(mf))
+	}
+
+	return result, nil
+}
+
+// FetchMetrics interface for mackerelplugin
+func (p Prom2mkrPlugin) FetchMetrics() (map[string]float64, error) {
+
+	result, err := p.fetchFamilies()
+	if err != nil {
+		return nil, err
 	}
 
 	ret, err := p.traverseMap(result)
@@ -157,8 +167,32 @@ func (p Prom2mkrPlugin) FetchMetrics() (map[string]float64, error) {
 }
 
 func (p Prom2mkrPlugin) createGraphDef() mp.GraphDef {
+	graphs := map[string]mp.Graphs{}
+	families, err := p.fetchFamilies()
+	if err != nil {
+		panic(err)
+	}
 
-	return mp.GraphDef{}
+	for _, f := range families {
+		name := strings.Replace(f.Name, "_", ".", -1)
+		unit := "float"
+		switch f.Type {
+		case "COUNTER":
+			unit = "integer"
+		case "GAUGE":
+			unit = "integer"
+		case "HISTOGRAM":
+			unit = "integer"
+		case "SUMMERY":
+			unit = "integer"
+		}
+
+		graphs[name] = mp.Graphs{
+			Unit: unit,
+		}
+	}
+
+	return mp.GraphDef{Graphs: graphs}
 }
 
 // GraphDefinition aa
@@ -212,18 +246,6 @@ func Do() {
 	p2m.Prefix = *optPrefix
 	p2m.URL = *optURL
 	p2m.GraphDefFile = *optTempGraphDef
-
-	metrics, err := p2m.FetchMetrics()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	p2m.Keys = make([]string, len(metrics))
-	i := 0
-	for k := range metrics {
-		p2m.Keys[i] = k
-		i++
-	}
 
 	helper := mp.NewMackerelPlugin(p2m)
 	helper.Tempfile = *optTempfile
